@@ -1,4 +1,5 @@
-<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><style>*,*::before,*::after{box-sizing:border-box}body{margin:0;padding:0}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
 <title>Bladerift</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -314,11 +315,12 @@ input[type="text"]:focus-visible { outline: 2px solid var(--accent); outline-off
         </svg>
         <h1>Bladerift</h1>
       </div>
-      <p class="lede">A twin-blade arena. Collect shards to grow, then cut down rivals and take what they drop. 30 bladers share the rift with you. To play with a friend, one of you presses Host and the other presses Join, both from the shared link.</p>
+      <p class="lede">A twin-blade arena. Collect shards to grow, then cut down rivals and take what they drop. 30 bladers share the rift with you. To play with a friend, one of you presses Host and shares the room code, the other types it in and presses Join.</p>
       <form id="startForm" autocomplete="off">
         <label for="name">Callsign</label>
         <input type="text" id="name" maxlength="14" placeholder="Wanderer" spellcheck="false">
         <button class="btn primary" type="submit">Enter the rift</button>
+        <input type="text" id="joinCode" maxlength="8" placeholder="Room code from your friend" spellcheck="false" autocapitalize="characters" hidden>
         <div class="row mp">
           <button class="btn ghost" id="hostBtn" type="button" hidden>Host for a friend</button>
           <button class="btn ghost" id="joinBtn" type="button" hidden>Join a friend</button>
@@ -354,6 +356,7 @@ input[type="text"]:focus-visible { outline: 2px solid var(--accent); outline-off
   </div>
 </div>
 
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>
 (function () {
 'use strict';
@@ -511,7 +514,7 @@ let paused = false, unlocked = false;
 const evlog = [];
 const swirls = [];
 const MP_MAX = 5, REM_COLORS = ['#4dd0e1', '#f06292', '#aed581', '#ba68c8', '#ffd54f'];
-const mp = { mode: 'solo', room: null, ready: false, hostPeer: null, myPeer: null, slots: new Map(), out: [], snapT: 0, orbT: 0, rosterT: 0, seq: 0, rosterNow: false,
+const mp = { mode: 'solo', kind: '', room: null, ready: false, hostPeer: null, myPeer: null, slots: new Map(), out: [], snapT: 0, orbT: 0, rosterT: 0, seq: 0, rosterNow: false,
   cnt: { dc: 0, dsh: 0, rs: 0 }, inT: 0, lastKey: '', lastSnapAt: 0, gotSnap: false, joinAt: 0, respawnWait: 0, note: '' };
 let viewS = 1;
 const cam = { x: WORLD / 2, y: WORLD / 2, z: 0.9 };
@@ -2202,7 +2205,7 @@ function hud(dt) {
 
 /* ---------- screens ---------- */
 
-const mpNoteEl = $('mpNote'), mpBadge = $('mpBadge'), hostBtn = $('hostBtn'), joinBtn = $('joinBtn');
+const joinCodeEl = $('joinCode'), mpNoteEl = $('mpNote'), mpBadge = $('mpBadge'), hostBtn = $('hostBtn'), joinBtn = $('joinBtn');
 const startScreen = $('start'), overScreen = $('over'), nameEl = $('name'), bestEl = $('best');
 
 function getBest() {
@@ -2293,19 +2296,31 @@ function callsign() {
   try { localStorage.setItem('bladerift-name', name); } catch (err) { /* ignore */ }
   return name;
 }
-if (hostBtn) hostBtn.addEventListener('click', () => {
+if (hostBtn) hostBtn.addEventListener('click', async () => {
   const name = callsign();
-  if (!mp.ready) { setMpNote('Multiplayer needs the shared page: open this artifact from claude.ai while signed in.'); return; }
-  if (mpHostStart() === false) return;
-  setMpNote('');
-  startGame(name);
+  if (!mp.ready) { setMpNote('Multiplayer is not available here.'); return; }
+  hostBtn.disabled = true;
+  try {
+    let code = '';
+    if (mp.kind === 'peer') { setMpNote('Opening a room…'); code = await mp.room.host(); }
+    if (mpHostStart() === false) return;
+    setMpNote(code ? 'Room code ' + code : '');
+    startGame(name);
+  } catch (err) { setMpNote(String((err && err.message) || 'Could not start hosting.')); }
+  finally { hostBtn.disabled = false; }
 });
-if (joinBtn) joinBtn.addEventListener('click', () => {
+if (joinBtn) joinBtn.addEventListener('click', async () => {
   const name = callsign();
-  if (!mp.ready) { setMpNote('Multiplayer needs the shared page: open this artifact from claude.ai while signed in.'); return; }
-  setMpNote('');
-  mpClientStart(name);
+  if (!mp.ready) { setMpNote('Multiplayer is not available here.'); return; }
+  joinBtn.disabled = true;
+  try {
+    if (mp.kind === 'peer') { setMpNote('Connecting…'); await mp.room.join(joinCodeEl ? joinCodeEl.value : ''); }
+    setMpNote('');
+    mpClientStart(name);
+  } catch (err) { setMpNote(String((err && err.message) || 'Could not join.')); }
+  finally { joinBtn.disabled = false; }
 });
+
 $('menuBtn').addEventListener('click', showMenu);
 
 try { nameEl.value = localStorage.getItem('bladerift-name') || ''; } catch (e) { /* ignore */ }
@@ -2552,12 +2567,125 @@ function mpUi() {
   const inMenu = state === 'menu';
   if (hostBtn) hostBtn.hidden = !mp.ready;
   if (joinBtn) joinBtn.hidden = !mp.ready;
+  if (joinCodeEl) joinCodeEl.hidden = !(mp.ready && mp.kind === 'peer');
   if (mpBadge) {
     const show = mp.mode !== 'solo' && state !== 'menu';
     mpBadge.hidden = !show;
-    if (show) mpBadge.textContent = mp.mode === 'host' ? 'Hosting · ' + (1 + mp.slots.size) + ' online · friends press Join' : 'Joined a friend’s game';
+    if (show) mpBadge.textContent = mp.mode === 'host' ? 'Hosting' + (mp.kind === 'peer' && mp.room ? ' · room code ' + mp.room.code() : '') + ' · ' + (1 + mp.slots.size) + ' online' : 'Joined a friend’s game';
   }
   if (inMenu && mp.note && mpNoteEl) mpNoteEl.textContent = mp.note;
+}
+
+/* ----- peer-to-peer transport (PeerJS over WebRTC): works on any static host such as GitHub Pages ----- */
+
+const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789', ID_PREFIX = 'bladerift-';
+function randCode() { let s = ''; for (let i = 0; i < 5; i++) s += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)]; return s; }
+
+function makePeerRoom() {
+  const listeners = {};
+  const st = { peer: null, id: null, role: null, conns: new Map(), pres: {}, hostConn: null, hostId: null, code: '' };
+  const fire = (topic, data, from) => {
+    for (const fn of (listeners[topic] || [])) {
+      try { fn({ topic: topic, data: data, peer: from, isMe: false, sameTab: false, kind: 'viewer', guest: false }); } catch (err) { /* a bad handler must not break the link */ }
+    }
+  };
+  const merge = (obj, patch) => {
+    if (!patch || typeof patch !== 'object') return;
+    for (const k of Object.keys(patch)) { if (patch[k] === null) delete obj[k]; else obj[k] = patch[k]; }
+  };
+  const sendTo = (c, msg) => { try { if (c && c.open) c.send(msg); } catch (err) { /* connection closing */ } };
+  const room = {
+    code() { return st.code; },
+    role() { return st.role; },
+    peers() {
+      if (!st.id) return [];
+      const me = { peer: st.id, isMe: true, sameTab: true, kind: 'viewer', guest: false, presence: st.pres, updatedAt: 0 };
+      const out = [me];
+      if (st.role === 'host') {
+        for (const c of st.conns.values()) out.push({ peer: c.peer, isMe: false, sameTab: false, kind: 'viewer', guest: false, presence: c.pres || {}, updatedAt: 0 });
+      } else if (st.role === 'client' && st.hostConn && st.hostConn.open) {
+        out.push({ peer: st.hostId, isMe: false, sameTab: false, kind: 'viewer', guest: false, presence: { host: 1 }, updatedAt: 0 });
+      }
+      return out;
+    },
+    emit(topic, data) {
+      if (st.role === 'host') for (const c of st.conns.values()) sendTo(c, { k: 'e', t: topic, d: data });
+      return Promise.resolve();
+    },
+    on(topic, fn) { (listeners[topic] = listeners[topic] || []).push(fn); return () => {}; },
+    presence(patch) {
+      merge(st.pres, patch);
+      if (st.role === 'client') sendTo(st.hostConn, { k: 'p', p: patch });
+      return Promise.resolve();
+    },
+    close() {
+      try { if (st.peer) st.peer.destroy(); } catch (err) { /* already gone */ }
+      st.peer = null; st.id = null; st.role = null; st.conns.clear(); st.hostConn = null; st.hostId = null; st.pres = {}; st.code = '';
+    },
+    host() {
+      room.close();
+      return new Promise((resolve, reject) => {
+        let tries = 0, done = false;
+        const attempt = () => {
+          const code = randCode();
+          let p;
+          try { p = new window.Peer(ID_PREFIX + code); } catch (err) { reject(err); return; }
+          st.peer = p;
+          const timer = setTimeout(() => { if (!done) { done = true; room.close(); reject(new Error('The connection service did not answer. Check your internet and try again.')); } }, 9000);
+          p.on('open', (id) => {
+            if (done) return;
+            done = true; clearTimeout(timer);
+            st.id = id; st.role = 'host'; st.code = code; st.pres = { host: 1 };
+            resolve(code);
+          });
+          p.on('error', (err) => {
+            if (done) return;
+            if (err && err.type === 'unavailable-id' && tries++ < 4) { clearTimeout(timer); try { p.destroy(); } catch (e2) { /* ignore */ } attempt(); return; }
+            done = true; clearTimeout(timer); room.close(); reject(err || new Error('Could not start hosting'));
+          });
+          p.on('connection', (c) => {
+            c.on('open', () => {
+              if (st.role !== 'host') return;
+              if (st.conns.size >= MP_MAX + 2) { try { c.close(); } catch (e3) { /* ignore */ } return; }
+              c.pres = {}; st.conns.set(c.peer, c);
+            });
+            c.on('data', (m) => { if (m && m.k === 'p' && m.p && typeof m.p === 'object') { c.pres = c.pres || {}; merge(c.pres, m.p); } });
+            const gone = () => { if (st.conns.get(c.peer) === c) st.conns.delete(c.peer); };
+            c.on('close', gone); c.on('error', gone);
+          });
+        };
+        attempt();
+      });
+    },
+    join(code) {
+      room.close();
+      code = String(code || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+      return new Promise((resolve, reject) => {
+        if (code.length < 4) { reject(new Error('Type the room code your friend sees.')); return; }
+        let done = false, p;
+        try { p = new window.Peer(); } catch (err) { reject(err); return; }
+        st.peer = p;
+        const fail = (msg) => { if (done) return; done = true; clearTimeout(timer); room.close(); reject(new Error(msg)); };
+        const timer = setTimeout(() => fail('Could not reach that room. Check the code, and that your friend is hosting.'), 10000);
+        p.on('error', (err) => fail(err && err.type === 'peer-unavailable' ? 'No room with that code. Check it and try again.' : 'Connection problem. Try again.'));
+        p.on('open', (id) => {
+          st.id = id;
+          const c = p.connect(ID_PREFIX + code, { reliable: true, serialization: 'json' });
+          c.on('open', () => {
+            if (done) return;
+            done = true; clearTimeout(timer);
+            st.role = 'client'; st.hostConn = c; st.hostId = c.peer; st.code = code;
+            sendTo(c, { k: 'p', p: st.pres });
+            resolve(code);
+          });
+          c.on('data', (m) => { if (m && m.k === 'e' && typeof m.t === 'string') fire(m.t, m.d, c.peer); });
+          c.on('close', () => { if (st.hostConn === c) st.hostConn = null; });
+          c.on('error', () => { if (!done) fail('Connection problem. Try again.'); });
+        });
+      });
+    },
+  };
+  return room;
 }
 
 /* ----- host ----- */
@@ -2707,7 +2835,7 @@ function mpHostTick(dt) {
 
 function mpHostStart() {
   if (!mp.room) return;
-  if (findHost()) { setMpNote('Someone is already hosting this page.'); return false; }
+  if (mp.kind === 'room' && findHost()) { setMpNote('Someone is already hosting this page.'); return false; }
   mp.mode = 'host';
   mpPresence({ host: 1 });
   return true;
@@ -2845,6 +2973,7 @@ function mpStop() {
   for (const e of mp.slots.values()) { e.rem = null; e.inp = null; }
   mp.slots.clear(); mp.out.length = 0;
   mp.mode = 'solo'; mp.hostPeer = null; mp.gotSnap = false;
+  if (mp.kind === 'peer' && mp.room) mp.room.close();
 }
 
 function clientFrame(dt) {
@@ -2898,11 +3027,16 @@ function clientFrame(dt) {
 
 async function mpInit() {
   try {
+    if (typeof window.Peer === 'function') {
+      mp.room = makePeerRoom(); mp.kind = 'peer'; mp.ready = true;
+      mpSubscribe(); mpUi();
+      return;
+    }
     const c = window.claude;
     if (!c || typeof c.use !== 'function') return;
     const room = await c.use('room');
     if (!room) return;
-    mp.room = room; mp.ready = true;
+    mp.room = room; mp.kind = 'room'; mp.ready = true;
     mpSubscribe();
     mpUi();
   } catch (err) { /* multiplayer unavailable: solo play still works */ }
