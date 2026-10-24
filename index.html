@@ -2578,6 +2578,15 @@ function mpUi() {
 
 /* ----- peer-to-peer transport (PeerJS over WebRTC): works on any static host such as GitHub Pages ----- */
 
+// Direct connections between two players can fail behind strict networks. TURN servers relay the traffic in those cases.
+// To use your own relay (more reliable), replace the TURN entries below with credentials from a TURN provider.
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun.cloudflare.com:3478' },
+  { urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turn:openrelay.metered.ca:443?transport=tcp', 'turns:openrelay.metered.ca:443?transport=tcp'], username: 'openrelayproject', credential: 'openrelayproject' }
+];
+const PEER_OPTS = { config: { iceServers: ICE_SERVERS, iceCandidatePoolSize: 4 } };
 const CODE_CHARS = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789', ID_PREFIX = 'bladerift-';
 function randCode() { let s = ''; for (let i = 0; i < 5; i++) s += CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)]; return s; }
 
@@ -2629,7 +2638,7 @@ function makePeerRoom() {
         const attempt = () => {
           const code = randCode();
           let p;
-          try { p = new window.Peer(ID_PREFIX + code); } catch (err) { reject(err); return; }
+          try { p = new window.Peer(ID_PREFIX + code, PEER_OPTS); } catch (err) { reject(err); return; }
           st.peer = p;
           const timer = setTimeout(() => { if (!done) { done = true; room.close(); reject(new Error('The connection service did not answer. Check your internet and try again.')); } }, 9000);
           p.on('open', (id) => {
@@ -2663,13 +2672,21 @@ function makePeerRoom() {
       return new Promise((resolve, reject) => {
         if (code.length < 4) { reject(new Error('Type the room code your friend sees.')); return; }
         let done = false, p;
-        try { p = new window.Peer(); } catch (err) { reject(err); return; }
+        try { p = new window.Peer(undefined, PEER_OPTS); } catch (err) { reject(err); return; }
         st.peer = p;
+        let signalled = false;
         const fail = (msg) => { if (done) return; done = true; clearTimeout(timer); room.close(); reject(new Error(msg)); };
-        const timer = setTimeout(() => fail('Could not reach that room. Check the code, and that your friend is hosting.'), 10000);
-        p.on('error', (err) => fail(err && err.type === 'peer-unavailable' ? 'No room with that code. Check it and try again.' : 'Connection problem. Try again.'));
+        const timer = setTimeout(() => fail(signalled
+          ? 'Found the room, but the direct connection to the host was blocked by one of your networks. Try another network or a VPN.'
+          : 'Could not reach the connection service. It may be blocked on your network. Try a VPN.'), 20000);
+        p.on('error', (err) => {
+          const t = err && err.type;
+          if (t === 'peer-unavailable') fail('No room with that code. Check it, and make sure your friend pressed Host.');
+          else if (t === 'network' || t === 'server-error' || t === 'socket-error' || t === 'socket-closed') fail('Could not reach the connection service. It may be blocked on your network. Try a VPN.');
+          else fail('Connection problem (' + (t || 'unknown') + '). Try again.');
+        });
         p.on('open', (id) => {
-          st.id = id;
+          st.id = id; signalled = true;
           const c = p.connect(ID_PREFIX + code, { reliable: true, serialization: 'json' });
           c.on('open', () => {
             if (done) return;
